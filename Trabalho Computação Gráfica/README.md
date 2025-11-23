@@ -54,4 +54,3 @@ Tecla / Ação Função
 * **fast_obj:** Biblioteca para parsing rápido e robusto de arquivos OBJ.
 * **stb_image:** Biblioteca header-only para carregamento de imagens (PNG/JPG).
 
-### Desenvolvido por Daniel Lessa De Carvalho.
