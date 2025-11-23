@@ -55,6 +55,8 @@ GLuint loadTexture(const char *filename) {
     glBindTexture(GL_TEXTURE_2D, id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
     int fmt = (c == 4) ? GL_RGBA : GL_RGB;
     glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
@@ -126,19 +128,15 @@ void carregarObjeto(int indice, const char* filename) {
     obj->centro[2] = (minv[2] + maxv[2]) / 2;
 
     float dx = maxv[0]-minv[0], dy = maxv[1]-minv[1], dz = maxv[2]-minv[2];
-    float md = dx;
+    float md = dx; if (dy>md) md=dy; if (dz>md) md=dz;
 
-    if (dy > md) md = dy;
-    if (dz > md) md = dz;
-
-    obj->escala = 4.0f / md; 
+    obj->escala = (md>0) ? 4.0f / md : 1.0f;
 }
 
 /* Define aparência do objeto, incluindo textura e materiais especiais */
 void aplicarEstiloVisual(Objeto3D* obj, int matIndex) {
     GLuint tex = 0;
-
-    if (matIndex >= 0 && matIndex < obj->materialCount)
+    if (matIndex >=0 && matIndex < obj->materialCount)
         tex = obj->materialTextures[matIndex];
 
     /* Se houver textura, aplica como DECAL (mantém luz sem escurecer) */
@@ -151,22 +149,18 @@ void aplicarEstiloVisual(Objeto3D* obj, int matIndex) {
     }
 
     glDisable(GL_TEXTURE_2D);
-
     /* Material especial do dragão (efeito pedra) */
     if (strstr(obj->nome, "dragon")) {
-        GLfloat stoneAmb[] = {0.30f, 0.30f, 0.30f, 1.0f};
-        GLfloat stoneDiff[] = {0.55f, 0.55f, 0.55f, 1.0f};
-        GLfloat stoneSpec[] = {0.10f, 0.10f, 0.10f, 1.0f};
-
+        GLfloat stoneAmb[] = {0.30f,0.30f,0.30f,1.0f};
+        GLfloat stoneDiff[] = {0.55f,0.55f,0.55f,1.0f};
+        GLfloat stoneSpec[] = {0.10f,0.10f,0.10f,1.0f};
         glMaterialfv(GL_FRONT, GL_AMBIENT, stoneAmb);
         glMaterialfv(GL_FRONT, GL_DIFFUSE, stoneDiff);
         glMaterialfv(GL_FRONT, GL_SPECULAR, stoneSpec);
         glMaterialf(GL_FRONT, GL_SHININESS, 6.0f);
-
-        glColor3f(0.55f, 0.55f, 0.55f);
+        glColor3f(0.55f,0.55f,0.55f);
         return;
     }
-
     /* Material padrão */
     GLfloat def[] = {0.8,0.8,0.8,1};
     glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, def);
@@ -178,20 +172,18 @@ void display() {
     Objeto3D* obj = &objetos[modeloAtual];
     if (!obj->carregado) return;
 
-    /* Fundo diferenciado para o dragão */
-    if (strstr(obj->nome, "dragon"))
+    if (strstr(obj->nome, "dragon")) {
+
         glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
-    else
+    } else {
         glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
-
+    }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     glLoadIdentity();
 
     GLfloat luzPos[] = {5,10,5,1};
     glLightfv(GL_LIGHT0, GL_POSITION, luzPos);
 
-    /* Configura câmera */
     gluLookAt(0,0,distCamera, 0,0,0, 0,1,0);
 
     glPushMatrix();
@@ -208,108 +200,103 @@ void display() {
 
         aplicarEstiloVisual(obj, mat);
 
-        glBegin(fv == 3 ? GL_TRIANGLES : GL_POLYGON);
-        for (int v = 0; v < fv; v++) {
-            fastObjIndex idx = obj->mesh->indices[idxOffset + v];
+        glBegin(fv==3?GL_TRIANGLES:GL_POLYGON);
+        for (int v=0; v<fv; v++) {
+            fastObjIndex idx = obj->mesh->indices[idxOffset+v];
 
-            if (idx.n >= 0)
-                glNormal3fv(&obj->mesh->normals[3 * idx.n]);
-
-            if (idx.t >= 0)
-                glTexCoord2f(obj->mesh->texcoords[2 * idx.t],
-                             1 - obj->mesh->texcoords[2 * idx.t + 1]);
-
-            glVertex3fv(&obj->mesh->positions[3 * idx.p]);
+            if (idx.n>=0)
+                glNormal3fv(&obj->mesh->normals[3*idx.n]);
+            if (idx.t>=0)
+                glTexCoord2f(obj->mesh->texcoords[2*idx.t], 1-obj->mesh->texcoords[2*idx.t+1]);
+            glVertex3fv(&obj->mesh->positions[3*idx.p]);
         }
         glEnd();
-
         idxOffset += fv;
     }
 
+    glDisable(GL_TEXTURE_2D); 
     glPopMatrix();
     glutSwapBuffers();
 }
 
 /* Troca de modelos usando teclado */
 void keyboardFunc(unsigned char key,int x,int y){
-    if (key == '1') modeloAtual = 0;
-    if (key == '2') modeloAtual = 1;
-    if (key == '3') modeloAtual = 2;
-    if (key == 27) exit(0); // ESC
+    if(key=='1') modeloAtual=0;
+    if(key=='2') modeloAtual=1;
+    if(key=='3') modeloAtual=2;
+    if(key==27) exit(0);
     glutPostRedisplay();
 }
 
 /* Zoom através da roda do mouse */
 void mouseWheel(int w,int d,int x,int y){
     distCamera += (d>0)?-0.3:0.3;
-    if (distCamera < 1) distCamera = 1;
+    if(distCamera<1) distCamera=1;
     glutPostRedisplay();
 }
 
 /* Controle de rotação via mouse */
 void mouseFunc(int b,int s,int x,int y){
-    if (b == 3 || b == 4)
-        mouseWheel(0,(b==3)?1:-1,x,y);
-    else if (b == GLUT_LEFT_BUTTON){
-        botaoPressionado = (s == GLUT_DOWN);
-        ultimoX = x;
-        ultimoY = y;
+    if(b==3||b==4) mouseWheel(0,(b==3)?1:-1,x,y);
+    else if(b==GLUT_LEFT_BUTTON){
+        botaoPressionado = (s==GLUT_DOWN);
+        ultimoX = x; ultimoY = y;
     }
 }
 
-void motionFunc(int x, int y) {
-    if (botaoPressionado) {
-        anguloY += (x - ultimoX) * 0.5f;
-        anguloX += (y - ultimoY) * 0.5f;
-        ultimoX = x;
-        ultimoY = y;
+void motionFunc(int x,int y){
+    if(botaoPressionado){
+        anguloY += (x-ultimoX)*0.5f;
+        anguloX += (y-ultimoY)*0.5f;
+        ultimoX=x; ultimoY=y;
         glutPostRedisplay();
     }
 }
 
-void reshape(int w, int h) {
-    if (h == 0) h = 1;
-    glViewport(0, 0, w, h);
+void reshape(int w,int h){
+    if(h==0) h=1;
+    glViewport(0,0,w,h);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(45.0, (float)w/h, 0.1, 100.0);
+    gluPerspective(45.0,(float)w/h,0.1,100.0);
     glMatrixMode(GL_MODELVIEW);
 }
 
-void initGL() {
+void initGL(){
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
     glEnable(GL_NORMALIZE);
     glShadeModel(GL_SMOOTH);
-
-    GLfloat luzAmb[] = {0.4f, 0.4f, 0.4f, 1.0f};
-    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, luzAmb);
+    GLfloat luzAmb[]={0.4f,0.4f,0.4f,1.0f};
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT,luzAmb);
 }
 
-int main(int argc, char** argv) {
-    for (int i = 0; i < 3; i++) {
-        objetos[i].mesh = NULL;
-        objetos[i].materialTextures = NULL;
-        objetos[i].materialCount = 0;
-        objetos[i].carregado = 0;
-        objetos[i].nome[0] = '\0';
+int main(int argc,char** argv){
+    for(int i=0;i<3;i++){
+        objetos[i].mesh=NULL;
+        objetos[i].materialTextures=NULL;
+        objetos[i].materialCount=0;
+        objetos[i].carregado=0;
+        objetos[i].nome[0]='\0';
     }
 
-    glutInit(&argc, argv);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GL_DEPTH);
+    glutInit(&argc,argv);
+
+
+    glutInitContextVersion(2,1);
+    glutInitContextProfile(GLUT_COMPATIBILITY_PROFILE);
+
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     glutInitWindowSize(900,600);
     glutCreateWindow("Visualizador de Modelos 3D");
 
     initGL();
 
-    if (argc > 1)
-        carregarObjeto(0, argv[1]);
-    else
-        carregarObjeto(0, "teapot.obj");
-
-    carregarObjeto(1, "bunny.obj");
-    carregarObjeto(2, "dragon.obj");
+    if(argc>1) carregarObjeto(0,argv[1]);
+    else carregarObjeto(0,"teapot.obj");
+    carregarObjeto(1,"bunny.obj");
+    carregarObjeto(2,"dragon.obj");
 
     printf("\n=== CONTROLES ===\n");
     printf("Tecle [1]: Visualizar Modelo 1 (Padrao: Bule)\n");
@@ -326,7 +313,6 @@ int main(int argc, char** argv) {
 
     glutMainLoop();
 
-    
-    for (int i = 0; i < 3; i++) liberarObjeto(&objetos[i]);
+    for(int i=0;i<3;i++) liberarObjeto(&objetos[i]);
     return 0;
 }
