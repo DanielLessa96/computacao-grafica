@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GL_DEPTH);
     glutInitWindowSize(900,600);
-    glutCreateWindow("Visualizador OBJ+MTL (robusto)");
+    glutCreateWindow("Visualizador de Modelos 3D");
 
     initGL();
 
