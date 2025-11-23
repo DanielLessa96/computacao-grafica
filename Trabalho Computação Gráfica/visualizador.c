@@ -1,300 +1,315 @@
-#include <GL/freeglut.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <GL/freeglut.h>
 
-/* * Define as implementacoes das bibliotecas de arquivo unico.
- * stb_image: para carregar texturas (PNG/JPG).
- * fast_obj: para carregar a geometria dos arquivos .obj.
- */
+/* Implementação do carregamento de imagens via stb_image */
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+/* Implementação da lib fast_obj, responsável por carregar OBJ/MTL */
 #define FAST_OBJ_IMPLEMENTATION
-#include "fast_obj.h" 
+#include "fast_obj.h"
 
-/* * Estrutura principal para armazenar os dados de cada objeto 3D.
- * Guarda a malha geometrica, o ID da textura OpenGL, informacoes de escala/centro
- * e o nome do arquivo para identificacao.
- */
+/* Estrutura que representa cada modelo 3D carregado */
 typedef struct {
-    fastObjMesh* mesh;
-    GLuint idTextura;
-    float escala;
-    float centro[3];
-    int carregado; 
-    char nome[64]; 
+    fastObjMesh* mesh;               // Dados do modelo carregado
+    GLuint* materialTextures;        // Array com as texturas carregadas
+    int materialCount;               // Quantidade de materiais
+    float escala;                    // Escala global do modelo
+    float centro[3];                 // Centro geométrico (para centralizar na tela)
+    int carregado;                   // Flag indicando se está carregado
+    char nome[128];                  // Nome do arquivo
 } Objeto3D;
 
-/* Variaveis globais para gerenciar os 3 slots de modelos e o estado da camera */
-Objeto3D objetos[3]; 
-int modeloAtual = 0; 
+Objeto3D objetos[3];        // Lista com 3 modelos
+int modeloAtual = 0;        // Índice do modelo sendo exibido
 
-float anguloX = 0.0f, anguloY = 0.0f, distCamera = 5.0f;
+// Controle de câmera/rotação
+float anguloX = 0, anguloY = 0, distCamera = 5;
 int ultimoX = 0, ultimoY = 0, botaoPressionado = 0;
 
-/*
- * Funcao: loadTexture
- * Objetivo: Carrega uma imagem do disco e a converte em uma textura utilizavel pelo OpenGL.
- * Configura os parametros de repeticao e filtro linear para suavizacao.
- */
+/* Verifica se arquivo existe */
+static int file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+/* Carrega textura a partir de arquivo usando stb_image */
 GLuint loadTexture(const char *filename) {
-    int w, h, c;
-    unsigned char *data = stbi_load(filename, &w, &h, &c, 0);
-    GLuint id = 0;
-    if (data) {
-        glGenTextures(1, &id); glBindTexture(GL_TEXTURE_2D, id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        int fmt = (c==4)?GL_RGBA:GL_RGB;
-        glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
-        stbi_image_free(data);
-        printf("[OK] Textura '%s' carregada.\n", filename);
-    } else {
-        printf("[AVISO] Textura '%s' nao encontrada.\n", filename);
+    if (!filename) return 0;
+    if (!file_exists(filename)) {
+        printf("[TEX] nao encontrado: %s\n", filename);
+        return 0;
     }
+
+    int w,h,c;
+    unsigned char *data = stbi_load(filename, &w, &h, &c, 0);
+    if (!data) return 0;
+
+    GLuint id;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    int fmt = (c == 4) ? GL_RGBA : GL_RGB;
+    glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
+
+    stbi_image_free(data);
     return id;
 }
 
-/*
- * Funcao: carregarObjeto
- * Objetivo: Le o arquivo .obj usando a biblioteca fast_obj.
- * Alem de ler a geometria, ela percorre todos os vertices para calcular o "Bounding Box" (caixa limite).
- * Isso serve para encontrar o centro do objeto e calcular a escala necessaria para que ele caiba na tela.
- */
+/* Libera memória associada a um objeto (mesh + texturas) */
+void liberarObjeto(Objeto3D* o) {
+    if (!o) return;
+
+    if (o->mesh)
+        fast_obj_destroy(o->mesh);
+
+    if (o->materialTextures) {
+        for (int i=0; i<o->materialCount; i++)
+            if (o->materialTextures[i])
+                glDeleteTextures(1, &o->materialTextures[i]);
+        free(o->materialTextures);
+    }
+
+    o->mesh = NULL;
+    o->materialTextures = NULL;
+    o->materialCount = 0;
+    o->carregado = 0;
+}
+
+/* Carrega um OBJ usando fast_obj e processa materiais, texturas e bounding box */
 void carregarObjeto(int indice, const char* filename) {
-    printf("Carregando Slot %d: '%s'...\n", indice+1, filename);
-    
+    printf("\n[LOAD] %s\n", filename);
     Objeto3D* obj = &objetos[indice];
-    
-    if(obj->mesh) fast_obj_destroy(obj->mesh);
-    
+    liberarObjeto(obj); // limpa dados antigos
+
     obj->mesh = fast_obj_read(filename);
-    
-    if (!obj->mesh) {
-        printf("   [FALHA] Nao foi possivel abrir '%s'. Slot %d ficara vazio.\n", filename, indice+1);
-        obj->carregado = 0;
+    if (!obj->mesh) return;
+
+    strncpy(obj->nome, filename, 127);
+    obj->carregado = 1;
+
+    /* Prepara texturas baseadas no MTL */
+    obj->materialCount = obj->mesh->material_count;
+    obj->materialTextures = calloc(obj->materialCount, sizeof(GLuint));
+
+    for (int m = 0; m < obj->materialCount; m++) {
+        unsigned int texIndex = obj->mesh->materials[m].map_Kd;
+        const char* texName = NULL;
+
+        if (texIndex > 0 && texIndex < obj->mesh->texture_count)
+            texName = obj->mesh->textures[texIndex].name;
+
+        obj->materialTextures[m] = texName ? loadTexture(texName) : 0;
+    }
+
+    /* Calcula bounding box para centralizar o modelo e ajustar escala */
+    float minv[3] = {1e9,1e9,1e9}, maxv[3]={-1e9,-1e9,-1e9};
+    for (unsigned i = 0; i < obj->mesh->position_count; i++) {
+        float x = obj->mesh->positions[3*i+0];
+        float y = obj->mesh->positions[3*i+1];
+        float z = obj->mesh->positions[3*i+2];
+
+        if (x<minv[0]) minv[0]=x; if (x>maxv[0]) maxv[0]=x;
+        if (y<minv[1]) minv[1]=y; if (y>maxv[1]) maxv[1]=y;
+        if (z<minv[2]) minv[2]=z; if (z>maxv[2]) maxv[2]=z;
+    }
+
+    obj->centro[0] = (minv[0] + maxv[0]) / 2;
+    obj->centro[1] = (minv[1] + maxv[1]) / 2;
+    obj->centro[2] = (minv[2] + maxv[2]) / 2;
+
+    float dx = maxv[0]-minv[0], dy = maxv[1]-minv[1], dz = maxv[2]-minv[2];
+    float md = dx;
+
+    if (dy > md) md = dy;
+    if (dz > md) md = dz;
+
+    obj->escala = 4.0f / md; 
+}
+
+/* Define aparência do objeto, incluindo textura e materiais especiais */
+void aplicarEstiloVisual(Objeto3D* obj, int matIndex) {
+    GLuint tex = 0;
+
+    if (matIndex >= 0 && matIndex < obj->materialCount)
+        tex = obj->materialTextures[matIndex];
+
+    /* Se houver textura, aplica como DECAL (mantém luz sem escurecer) */
+    if (tex) {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+        glColor3f(1,1,1);
         return;
     }
 
-    strcpy(obj->nome, filename);
-    obj->carregado = 1;
-    obj->idTextura = 0; 
+    glDisable(GL_TEXTURE_2D);
 
-    float min[3] = {1e9, 1e9, 1e9};
-    float max[3] = {-1e9, -1e9, -1e9};
+    /* Material especial do dragão (efeito pedra) */
+    if (strstr(obj->nome, "dragon")) {
+        GLfloat stoneAmb[] = {0.30f, 0.30f, 0.30f, 1.0f};
+        GLfloat stoneDiff[] = {0.55f, 0.55f, 0.55f, 1.0f};
+        GLfloat stoneSpec[] = {0.10f, 0.10f, 0.10f, 1.0f};
 
-    for (unsigned int i = 0; i < obj->mesh->position_count; i++) {
-        float x = obj->mesh->positions[3 * i + 0];
-        float y = obj->mesh->positions[3 * i + 1];
-        float z = obj->mesh->positions[3 * i + 2];
+        glMaterialfv(GL_FRONT, GL_AMBIENT, stoneAmb);
+        glMaterialfv(GL_FRONT, GL_DIFFUSE, stoneDiff);
+        glMaterialfv(GL_FRONT, GL_SPECULAR, stoneSpec);
+        glMaterialf(GL_FRONT, GL_SHININESS, 6.0f);
 
-        if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
-        if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
-        if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+        glColor3f(0.55f, 0.55f, 0.55f);
+        return;
     }
 
-    obj->centro[0] = (max[0] + min[0]) / 2.0f;
-    obj->centro[1] = (max[1] + min[1]) / 2.0f;
-    obj->centro[2] = (max[2] + min[2]) / 2.0f;
-
-    float maxDim = max[0] - min[0];
-    if ((max[1] - min[1]) > maxDim) maxDim = max[1] - min[1];
-    if ((max[2] - min[2]) > maxDim) maxDim = max[2] - min[2];
-
-    if (maxDim > 0) obj->escala = 4.0f / maxDim;
-    else obj->escala = 1.0f;
-
-    printf("   [SUCESSO] %d faces.\n", obj->mesh->face_count);
+    /* Material padrão */
+    GLfloat def[] = {0.8,0.8,0.8,1};
+    glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, def);
+    glMaterialf(GL_FRONT, GL_SHININESS, 40);
 }
 
-/*
- * Funcao: aplicarEstiloVisual
- * Objetivo: Define as propriedades do material (cor, brilho, textura) e a cor de fundo da janela
- * baseando-se no nome do arquivo carregado.
- */
-void aplicarEstiloVisual(Objeto3D* obj) {
-    if (strstr(obj->nome, "teapot")) {
-        if (obj->idTextura > 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, obj->idTextura);
-            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL); 
-            glColor3f(1,1,1);
-        } else {
-            glDisable(GL_TEXTURE_2D);
-            GLfloat white[] = {1.0f, 1.0f, 1.0f, 1.0f};
-            glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, white);
-            glMaterialf(GL_FRONT, GL_SHININESS, 80.0f);
-        }
-    }
-    else if (strstr(obj->nome, "dragon")) {
-        glDisable(GL_TEXTURE_2D);
-        GLfloat matAmb[] = {0.2f, 0.2f, 0.2f, 1.0f};
-        GLfloat matDif[] = {0.5f, 0.5f, 0.5f, 1.0f}; 
-        glMaterialfv(GL_FRONT, GL_AMBIENT, matAmb);
-        glMaterialfv(GL_FRONT, GL_DIFFUSE, matDif);
-        glMaterialf(GL_FRONT, GL_SHININESS, 10.0f); 
-    }
-    
-    else if (strstr(obj->nome, "bunny")) {   
-        glDisable(GL_TEXTURE_2D);
-        GLfloat clay[] = {0.7f, 0.7f, 0.7f, 1.0f}; 
-        glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, clay);
-        glMaterialf(GL_FRONT, GL_SHININESS, 5.0f); 
-    }
-    else {
-        glClearColor(0.7f, 0.8f, 0.9f, 1.0f); 
-        glDisable(GL_TEXTURE_2D);
-        glColor3f(0.8f, 0.8f, 0.8f); 
-        GLfloat def[] = {0.8f, 0.8f, 0.8f, 1.0f};
-        glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, def);
-    }
-}
-
-/*
- * Funcao: display
- * Objetivo: Loop de renderizacao. Limpa a tela, posiciona a luz e camera, aplica transformacoes
- * e desenha a malha do objeto.
- */
+/* Renderiza a cena */
 void display() {
     Objeto3D* obj = &objetos[modeloAtual];
+    if (!obj->carregado) return;
 
-    /* Corrige a cor do fundo do dragao se necessario antes de limpar o buffer */
-    if (strstr(obj->nome, "dragon")){
+    /* Fundo diferenciado para o dragão */
+    if (strstr(obj->nome, "dragon"))
         glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
-    }
-    else {
+    else
         glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
-    }
-    
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glLoadIdentity();
-    
-    aplicarEstiloVisual(obj); 
-    
-    if (!obj->carregado) {
-        glutSwapBuffers();
-        return;
-    }
 
-    GLfloat luzPos[] = {0.0f, 10.0f, 10.0f, 0.0f}; 
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glLoadIdentity();
+
+    GLfloat luzPos[] = {5,10,5,1};
     glLightfv(GL_LIGHT0, GL_POSITION, luzPos);
 
-    gluLookAt(0.0, 0.0, distCamera, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+    /* Configura câmera */
+    gluLookAt(0,0,distCamera, 0,0,0, 0,1,0);
 
     glPushMatrix();
-    glRotatef(anguloX, 1.0, 0.0, 0.0);
-    glRotatef(anguloY, 0.0, 1.0, 0.0);
+    glRotatef(anguloX,1,0,0);
+    glRotatef(anguloY,0,1,0);
     glScalef(obj->escala, obj->escala, obj->escala);
     glTranslatef(-obj->centro[0], -obj->centro[1], -obj->centro[2]);
 
-    /* Desenho da geometria:
-       Itera sobre todas as faces. Se a face tiver mais de 3 vertices (ex: quadrado),
-       usa GL_POLYGON para desenhar corretamente. Se for triangulo padrao, usa GL_TRIANGLES.
-    */
-    glBegin(GL_TRIANGLES);
-    unsigned int index_offset = 0;
-    for (unsigned int i = 0; i < obj->mesh->face_count; i++) {
-        int faceVertices = obj->mesh->face_vertices[i]; 
-        
-        if (faceVertices != 3) { glEnd(); glBegin(GL_POLYGON); } 
+    /* Renderização baseada nos índices do fast_obj */
+    unsigned idxOffset = 0;
+    for (unsigned f = 0; f < obj->mesh->face_count; f++) {
+        int fv = obj->mesh->face_vertices[f];
+        int mat = obj->mesh->face_materials ? obj->mesh->face_materials[f] : -1;
 
-        for (int j = 0; j < faceVertices; j++) {
-            fastObjIndex idx = obj->mesh->indices[index_offset + j];
+        aplicarEstiloVisual(obj, mat);
 
-            if (idx.n) {
-                glNormal3f(obj->mesh->normals[3 * idx.n + 0],
-                           obj->mesh->normals[3 * idx.n + 1],
-                           obj->mesh->normals[3 * idx.n + 2]);
-            }
-            if (idx.t && obj->idTextura > 0) {
-                glTexCoord2f(obj->mesh->texcoords[2 * idx.t + 0],
-                             1.0f - obj->mesh->texcoords[2 * idx.t + 1]); 
-            }
-            glVertex3f(obj->mesh->positions[3 * idx.p + 0],
-                       obj->mesh->positions[3 * idx.p + 1],
-                       obj->mesh->positions[3 * idx.p + 2]);
+        glBegin(fv == 3 ? GL_TRIANGLES : GL_POLYGON);
+        for (int v = 0; v < fv; v++) {
+            fastObjIndex idx = obj->mesh->indices[idxOffset + v];
+
+            if (idx.n >= 0)
+                glNormal3fv(&obj->mesh->normals[3 * idx.n]);
+
+            if (idx.t >= 0)
+                glTexCoord2f(obj->mesh->texcoords[2 * idx.t],
+                             1 - obj->mesh->texcoords[2 * idx.t + 1]);
+
+            glVertex3fv(&obj->mesh->positions[3 * idx.p]);
         }
-        
-        if (faceVertices != 3) { glEnd(); glBegin(GL_TRIANGLES); }
-        
-        index_offset += faceVertices; 
+        glEnd();
+
+        idxOffset += fv;
     }
-    glEnd();
-    glDisable(GL_TEXTURE_2D);
 
     glPopMatrix();
     glutSwapBuffers();
 }
 
-/* Callbacks para interacao com teclado e mouse */
-void keyboardFunc(unsigned char key, int x, int y) {
-    if(key == 27) exit(0);
-    
-    /* Alterna entre os slots de modelos carregados */
-    if(key == '1') { modeloAtual = 0; printf("Visualizando: Modelo 1 (Bule)\n"); }
-    if(key == '2') { modeloAtual = 1; printf("Visualizando: Modelo 2 (Coelho)\n"); }
-    if(key == '3') { modeloAtual = 2; printf("Visualizando: Modelo 3 (Dragao)\n"); }
-    
+/* Troca de modelos usando teclado */
+void keyboardFunc(unsigned char key,int x,int y){
+    if (key == '1') modeloAtual = 0;
+    if (key == '2') modeloAtual = 1;
+    if (key == '3') modeloAtual = 2;
+    if (key == 27) exit(0); // ESC
     glutPostRedisplay();
 }
 
-void mouseWheel(int wheel, int direction, int x, int y) {
-    distCamera += (direction > 0) ? -0.5f : 0.5f;
-    if(distCamera < 1.0f) distCamera=1.0f; 
+/* Zoom através da roda do mouse */
+void mouseWheel(int w,int d,int x,int y){
+    distCamera += (d>0)?-0.3:0.3;
+    if (distCamera < 1) distCamera = 1;
     glutPostRedisplay();
 }
-void mouseFunc(int button, int state, int x, int y) {
-    if (button == 3 || button == 4) mouseWheel(0, (button==3)?1:-1, x, y);
-    else if (button == GLUT_LEFT_BUTTON) { botaoPressionado = (state == GLUT_DOWN); ultimoX = x; ultimoY = y; }
+
+/* Controle de rotação via mouse */
+void mouseFunc(int b,int s,int x,int y){
+    if (b == 3 || b == 4)
+        mouseWheel(0,(b==3)?1:-1,x,y);
+    else if (b == GLUT_LEFT_BUTTON){
+        botaoPressionado = (s == GLUT_DOWN);
+        ultimoX = x;
+        ultimoY = y;
+    }
 }
+
 void motionFunc(int x, int y) {
-    if (botaoPressionado) { anguloY += (x-ultimoX)*0.5f; anguloX += (y-ultimoY)*0.5f; ultimoX=x; ultimoY=y; glutPostRedisplay(); }
+    if (botaoPressionado) {
+        anguloY += (x - ultimoX) * 0.5f;
+        anguloX += (y - ultimoY) * 0.5f;
+        ultimoX = x;
+        ultimoY = y;
+        glutPostRedisplay();
+    }
 }
+
 void reshape(int w, int h) {
-    glViewport(0, 0, w, h); glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    gluPerspective(45, (float)w/h, 0.1, 100.0); glMatrixMode(GL_MODELVIEW);
+    if (h == 0) h = 1;
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0, (float)w/h, 0.1, 100.0);
+    glMatrixMode(GL_MODELVIEW);
 }
 
 void initGL() {
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_LIGHTING); glEnable(GL_LIGHT0);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
     glEnable(GL_NORMALIZE);
     glShadeModel(GL_SMOOTH);
-    GLfloat luzAmb[] = {0.4f, 0.4f, 0.4f, 1.0f}; 
+
+    GLfloat luzAmb[] = {0.4f, 0.4f, 0.4f, 1.0f};
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, luzAmb);
 }
 
 int main(int argc, char** argv) {
+    for (int i = 0; i < 3; i++) {
+        objetos[i].mesh = NULL;
+        objetos[i].materialTextures = NULL;
+        objetos[i].materialCount = 0;
+        objetos[i].carregado = 0;
+        objetos[i].nome[0] = '\0';
+    }
+
     glutInit(&argc, argv);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
-    glutInitWindowSize(800, 600);
-    glutCreateWindow("Visualizador 3D");
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GL_DEPTH);
+    glutInitWindowSize(900,600);
+    glutCreateWindow("Visualizador OBJ+MTL (robusto)");
 
     initGL();
 
-    /* Carregamento inicial dos 3 modelos padrao */
-    
-    if (argc > 1) {
-        /* Se o usuario passou um arquivo, carrega no slot 1 (substitui bule) */
+    if (argc > 1)
         carregarObjeto(0, argv[1]);
-        carregarObjeto(1, "bunny.obj");
-        carregarObjeto(2, "dragon.obj");
-    } 
-    else {
-        /* Carregamento padrao */
+    else
         carregarObjeto(0, "teapot.obj");
-        carregarObjeto(1, "bunny.obj");
-        carregarObjeto(2, "dragon.obj");
-    }
 
-    /* Tenta carregar a textura default para o bule, se ele estiver no slot 0 */
-    if (strstr(objetos[0].nome, "teapot")) {
-        objetos[0].idTextura = loadTexture("default.png");
-    }
+    carregarObjeto(1, "bunny.obj");
+    carregarObjeto(2, "dragon.obj");
 
     printf("\n=== CONTROLES ===\n");
     printf("Tecle [1]: Visualizar Modelo 1 (Padrao: Bule)\n");
@@ -310,7 +325,8 @@ int main(int argc, char** argv) {
     glutMouseWheelFunc(mouseWheel);
 
     glutMainLoop();
+
     
-    for(int i=0; i<3; i++) if(objetos[i].mesh) fast_obj_destroy(objetos[i].mesh);
+    for (int i = 0; i < 3; i++) liberarObjeto(&objetos[i]);
     return 0;
 }
